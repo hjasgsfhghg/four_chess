@@ -4,7 +4,7 @@
     <div class="button-group">
       <button class="menu-btn" @click="goToGame('single')">单人挑战</button>
       <button class="menu-btn" @click="goToGame('double')">双人对战</button>
-      <button class="menu-btn" @click="goToGame('watch')">观战模式</button>
+      <button class="menu-btn" @click="goToGame('battle')">观战模式</button>
       <button class="menu-btn" @click="showRules = true">游戏规则</button>
     </div>
 
@@ -57,7 +57,7 @@ const goToGame = (mode) => {
   height: 100px;
   font-size: 25px;
   cursor: pointer;
-  border-radius: 6px;/* 可选：加圆角 */
+  border-radius: 6px;
 }
 .modal-overlay {
   position: fixed;
@@ -90,6 +90,6 @@ const goToGame = (mode) => {
   cursor: pointer;
   display: block;
   margin: 20px auto 0;
-  border-radius: 6px;/* 可选：加圆角 */
+  border-radius: 6px;
 }
 </style>
