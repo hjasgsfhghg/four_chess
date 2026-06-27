@@ -14,16 +14,17 @@
         <button class="pause-btn" @click="togglePause">{{ watchPaused ? '继续' : '暂停' }}</button>
       </div>
 
-      <div v-if="mode === 'battle' && battleRunning" class="battle-status-bar">
-        <span>第 {{ currentRound }} / {{ battleRounds }} 局</span>
-        <span class="battle-role">
-          红={{ currentRound % 2 === 1 ? '策略A' : '策略B' }}
-          黄={{ currentRound % 2 === 1 ? '策略B' : '策略A' }}
-        </span>
-      </div>
-
-      <div v-if="mode === 'battle' && battleRoundEnd" class="battle-round-result">
-        {{ roundResultText }}
+      <div v-if="mode === 'battle'" class="battle-info-bar">
+        <div v-show="battleRunning && !battleRoundEnd" class="battle-status-bar">
+          <span>第 {{ currentRound }} / {{ battleRounds }} 局</span>
+          <span class="battle-role">
+            红={{ currentRound % 2 === 1 ? '策略A' : '策略B' }}
+            黄={{ currentRound % 2 === 1 ? '策略B' : '策略A' }}
+          </span>
+        </div>
+        <div v-show="battleRoundEnd" class="battle-round-result">
+          {{ roundResultText }}
+        </div>
       </div>
 
       <div class="board">
@@ -38,7 +39,7 @@
           <div v-for="c in colCount" :key="c" class="cell" @click="handleClick(r-1, c-1)">
             <div class="cell-slot"></div>
             <div class="piece"
-              :class="{ cell1: board[r-1][c-1] === 1, cell2: board[r-1][c-1] === 2, 'cell-fall': fallRow === r && fallCol === c }"
+              :class="{ cell1: board[r-1][c-1] === 1, cell2: board[r-1][c-1] === 2 }"
             ></div>
           </div>
         </div>
@@ -88,6 +89,17 @@
             <option :value="200">200</option>
           </select>
         </div>
+        <div class="battle-select-row">
+          <label>间隔(ms)</label>
+          <input type="number" v-model.number="tgDelay" :disabled="battleRunning" min="0" max="5000" step="100" />
+        </div>
+        <div class="battle-select-row">
+          <label>API 地址</label>
+          <select v-model="apiMode" :disabled="battleRunning" @change="onApiModeChange">
+            <option value="network">联网</option>
+            <option value="local">本地</option>
+          </select>
+        </div>
         <button class="battle-start-btn" @click="battleRunning ? stopBattle() : startBattle()">
           {{ battleRunning ? '停止对战' : '开始对战' }}
         </button>
@@ -123,6 +135,13 @@
           <span>{{ pctDraw }}%</span>
           <span>{{ pctB }}%</span>
         </div>
+
+        <div class="battle-timing">
+          <div class="timing-row"><span class="timing-label">策略A 耗时</span><span class="timing-value stat-a">{{ apiDurationA }}</span></div>
+          <div class="timing-sub"><span>最大 {{ statsA.max }}</span><span>最小 {{ statsA.min }}</span><span>平均 {{ statsA.avg }}</span></div>
+          <div class="timing-row"><span class="timing-label">策略B 耗时</span><span class="timing-value stat-b">{{ apiDurationB }}</span></div>
+          <div class="timing-sub"><span>最大 {{ statsB.max }}</span><span>最小 {{ statsB.min }}</span><span>平均 {{ statsB.avg }}</span></div>
+        </div>
       </div>
     </div>
   </div>
@@ -143,12 +162,8 @@ const colCount = 7
 const board = ref(Array(rowCount).fill(0).map(() => Array(colCount).fill(0)))
 const currentPlayer = ref(1)
 const winner = ref(0)
-const fallRow = ref(-1)
-const fallCol = ref(-1)
-const isAnimating = ref(false)
 const aiThinking = ref(false)
 const watchPaused = ref(false)
-const pendingTimer = ref(null)
 const watchTimer = ref(null)
 
 const battleStrategyA = ref('enhanced')
@@ -166,6 +181,29 @@ const battleWinnerCache = ref(0)
 const cellSize = 80
 const gap = 10
 const boardPadding = 10
+const tgDelay = ref(0)
+const apiMode = ref('network')
+const apiBase = ref('http://223.109.143.156:3014')
+
+const onApiModeChange = () => {
+  apiBase.value = apiMode.value === 'local' ? 'http://localhost:3014' : 'http://223.109.143.156:3014'
+}
+
+const apiDurationA = ref('-')
+const apiDurationB = ref('-')
+const timingsA = ref([])
+const timingsB = ref([])
+
+const statsA = computed(() => calcStats(timingsA.value))
+const statsB = computed(() => calcStats(timingsB.value))
+const calcStats = (arr) => {
+  if (arr.length === 0) return { max: '-', min: '-', avg: '-' }
+  return {
+    max: `${Math.max(...arr).toFixed(0)}ms`,
+    min: `${Math.min(...arr).toFixed(0)}ms`,
+    avg: `${(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(0)}ms`
+  }
+}
 
 const goBack = () => {
   stopBattle()
@@ -173,14 +211,10 @@ const goBack = () => {
 }
 
 const resetBoardOnly = () => {
-  if (pendingTimer.value) { clearTimeout(pendingTimer.value); pendingTimer.value = null }
   if (watchTimer.value) { clearTimeout(watchTimer.value); watchTimer.value = null }
   board.value = Array(rowCount).fill(0).map(() => Array(colCount).fill(0))
   currentPlayer.value = 1
   winner.value = 0
-  fallRow.value = -1
-  fallCol.value = -1
-  isAnimating.value = false
   aiThinking.value = false
   battleRoundEnd.value = false
   battleWinnerCache.value = 0
@@ -314,64 +348,68 @@ const scheduleNextRound = () => {
   }
   currentRound.value++
   resetBoardOnly()
-  watchTimer.value = setTimeout(() => triggerAI(1), 600)
+  watchTimer.value = setTimeout(() => triggerAI(1), tgDelay.value)
 }
 
 const doDrop = (row, col, player) => {
-  isAnimating.value = true
-  fallRow.value = row + 1
-  fallCol.value = col + 1
   board.value[row][col] = player
 
-  pendingTimer.value = setTimeout(() => {
-    fallRow.value = -1
-    fallCol.value = -1
-    if (checkWin(row, col, player)) {
-      winner.value = player
-      isAnimating.value = false
-      if (mode.value === 'battle' && battleRunning.value) {
-        recordBattleResult()
-        setTimeout(scheduleNextRound, 2000)
-      }
-      return
+  if (checkWin(row, col, player)) {
+    winner.value = player
+    if (mode.value === 'battle' && battleRunning.value) {
+      recordBattleResult()
+      setTimeout(scheduleNextRound, 1000)
     }
-    if (isBoardFull()) {
-      winner.value = 3
-      isAnimating.value = false
-      if (mode.value === 'battle' && battleRunning.value) {
-        recordBattleResult()
-        setTimeout(scheduleNextRound, 2000)
-      }
-      return
+    return
+  }
+  if (isBoardFull()) {
+    winner.value = 3
+    if (mode.value === 'battle' && battleRunning.value) {
+      recordBattleResult()
+      setTimeout(scheduleNextRound, 1000)
     }
-    const nextPlayer = player === 1 ? 2 : 1
-    currentPlayer.value = nextPlayer
-    isAnimating.value = false
-    afterTurn()
-  }, 500)
+    return
+  }
+  const nextPlayer = player === 1 ? 2 : 1
+  currentPlayer.value = nextPlayer
+  afterTurn()
 }
 
 const afterTurn = () => {
   if (mode.value === 'single' && currentPlayer.value === 2) {
     triggerAI(2)
   } else if (mode.value === 'watch' && !watchPaused.value && winner.value === 0) {
-    watchTimer.value = setTimeout(() => triggerAI(currentPlayer.value), 600)
+    watchTimer.value = setTimeout(() => triggerAI(currentPlayer.value), tgDelay.value)
   } else if (mode.value === 'battle' && battleRunning.value && winner.value === 0) {
-    watchTimer.value = setTimeout(() => triggerAI(currentPlayer.value), 600)
+    watchTimer.value = setTimeout(() => triggerAI(currentPlayer.value), tgDelay.value)
   }
 }
 
 const triggerAI = async (player) => {
+  const t0 = performance.now()
+
   aiThinking.value = true
   try {
     const flippedBoard = board.value.map(r => [...r]).reverse()
     const strategy = mode.value === 'battle' ? getStrategyForPlayer(player) : 'enhanced'
-    const resp = await fetch('http://localhost:3014/', {
+    const resp = await fetch(`${apiBase.value}/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ board: flippedBoard, who: player, strategy })
     })
     const data = await resp.json()
+    const durationMs = performance.now() - t0
+    const duration = `${durationMs.toFixed(0)}ms`
+    if (mode.value === 'battle') {
+      const isA = (currentRound.value % 2 === 1) === (player === 1)
+      if (isA) {
+        apiDurationA.value = duration
+        timingsA.value.push(durationMs)
+      } else {
+        apiDurationB.value = duration
+        timingsB.value.push(durationMs)
+      }
+    }
     if (data.drop === -1 || winner.value !== 0) { aiThinking.value = false; return }
     const targetRow = findDropRow(data.drop)
     if (targetRow === -1) { aiThinking.value = false; return }
@@ -384,7 +422,7 @@ const triggerAI = async (player) => {
 }
 
 const handleClick = (clickRow, clickCol) => {
-  if (winner.value !== 0 || isAnimating.value) return
+  if (winner.value !== 0) return
   if (aiThinking.value) return
   if (mode.value === 'single' && currentPlayer.value === 2) return
   if (mode.value === 'watch') return
@@ -399,7 +437,7 @@ const togglePause = () => {
   if (winner.value !== 0) return
   watchPaused.value = !watchPaused.value
   if (!watchPaused.value) {
-    watchTimer.value = setTimeout(() => triggerAI(currentPlayer.value), 600)
+    watchTimer.value = setTimeout(() => triggerAI(currentPlayer.value), tgDelay.value)
   } else {
     if (watchTimer.value) { clearTimeout(watchTimer.value); watchTimer.value = null }
   }
@@ -412,8 +450,12 @@ const startBattle = () => {
   currentRound.value = 1
   battleRunning.value = true
   battleStarted.value = true
+  apiDurationA.value = '-'
+  apiDurationB.value = '-'
+  timingsA.value = []
+  timingsB.value = []
   resetBoardOnly()
-  watchTimer.value = setTimeout(() => triggerAI(1), 600)
+  watchTimer.value = setTimeout(() => triggerAI(1), tgDelay.value)
 }
 
 const stopBattle = () => {
@@ -423,12 +465,11 @@ const stopBattle = () => {
 
 onMounted(() => {
   if (mode.value === 'watch') {
-    watchTimer.value = setTimeout(() => triggerAI(1), 600)
+    watchTimer.value = setTimeout(() => triggerAI(1), tgDelay.value)
   }
 })
 
 onUnmounted(() => {
-  if (pendingTimer.value) clearTimeout(pendingTimer.value)
   if (watchTimer.value) clearTimeout(watchTimer.value)
 })
 </script>
@@ -471,6 +512,7 @@ onUnmounted(() => {
 }
 .pause-btn { width: 100px; height: 40px; font-size: 18px; cursor: pointer; border-radius: 6px; }
 
+.battle-info-bar { min-height: 48px; margin: 10px 0; }
 .battle-status-bar {
   display: flex; align-items: center; justify-content: center; gap: 30px;
   margin: 10px 0; font-size: 22px; color: #333;
@@ -482,7 +524,7 @@ onUnmounted(() => {
   margin: 10px 0; animation: pulse 0.8s ease-in-out infinite;
 }
 
-.btn-group { display: flex; justify-content: center; gap: 100px; margin-top: 50px; }
+.btn-group { display: flex; justify-content: center; gap: 100px; margin-top: 50px; min-height: 100px; }
 button { width: 200px; height: 100px; cursor: pointer; font-size: 25px; border-radius: 6px; }
 
 .board {
@@ -492,11 +534,9 @@ button { width: 200px; height: 100px; cursor: pointer; font-size: 25px; border-r
 .win-line { position: absolute; background: #ffffff; z-index: 99; pointer-events: none; display: none; }
 .win-line.line-h, .win-line.line-v, .win-line.line-s, .win-line.line-b { display: block; }
 .row { display: flex; gap: 10px; }
-.cell { width: 80px; height: 80px; position: relative; overflow: visible; }
+.cell { width: 80px; height: 80px; position: relative; }
 .cell-slot { width: 100%; height: 100%; border-radius: 50%; background: #ffffff; }
-.piece { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border-radius: 50%; transform: translateY(0); background: transparent; }
-.cell-fall { animation: fall 0.5s ease-out forwards; }
-@keyframes fall { from { transform: translateY(-1000px); } to { transform: translateY(0); } }
+.piece { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border-radius: 50%; }
 .cell1 { background: #e53935 !important; }
 .cell2 { background: #d8e51e !important; }
 
@@ -520,7 +560,7 @@ button { width: 200px; height: 100px; cursor: pointer; font-size: 25px; border-r
 .battle-config { display: flex; flex-direction: column; gap: 14px; }
 .battle-select-row { display: flex; align-items: center; gap: 12px; }
 .battle-select-row label { width: 70px; text-align: right; font-size: 18px; font-weight: bold; }
-.battle-select-row select { flex: 1; height: 38px; font-size: 16px; border-radius: 6px; padding: 0 8px; }
+.battle-select-row select, .battle-select-row input { flex: 1; height: 38px; font-size: 16px; border-radius: 6px; padding: 0 8px; }
 .battle-vs { font-size: 24px; font-weight: bold; color: #888; }
 .battle-start-btn { width: 100%; height: 48px; font-size: 20px; cursor: pointer; border-radius: 6px; margin-top: 6px; }
 
@@ -539,4 +579,18 @@ button { width: 200px; height: 100px; cursor: pointer; font-size: 25px; border-r
 .seg-draw { background: #9e9e9e; }
 
 .battle-pct-row { display: flex; justify-content: space-around; margin-top: 6px; font-size: 14px; color: #666; }
+
+.battle-timing { margin-top: 16px; background: #fff; border-radius: 8px; padding: 12px 16px; }
+.timing-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 15px; }
+.timing-label { color: #888; }
+.timing-value { color: #333; font-weight: bold; font-variant-numeric: tabular-nums; }
+.timing-sub { display: flex; justify-content: space-around; font-size: 13px; color: #999; padding: 2px 0 6px; }
+</style>
+
+<style>
+html, body {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
 </style>

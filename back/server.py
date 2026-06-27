@@ -1,9 +1,27 @@
-from flask import Flask, request, jsonify
+import time
+import logging
+from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 from add import get_best_drop, STRATEGY_MAP, run_battle
 
 app = Flask(__name__)
 CORS(app)
+
+# 关闭 Werkzeug 默认日志，避免重复输出
+log = logging.getLogger("werkzeug")
+log.setLevel(logging.ERROR)
+
+
+@app.before_request
+def start_timer():
+    g.start = time.perf_counter()
+
+
+@app.after_request
+def log_latency(response):
+    elapsed = (time.perf_counter() - g.get("start", 0)) * 1000
+    print(f"[{time.strftime('%H:%M:%S')}] {request.method} {request.path} → {response.status_code}  {elapsed:.1f}ms")
+    return response
 
 
 @app.route("/", methods=["POST"])
@@ -28,4 +46,4 @@ def battle():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=3014)
+    app.run(host="0.0.0.0", port=3014,threaded = True)
